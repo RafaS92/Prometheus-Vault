@@ -1,70 +1,22 @@
 # Session Management
 
-## 1. Overview
+## Overview
 
-Session management is the mechanism that allows an application to identify a user across multiple HTTP requests.
+HTTP is **stateless**. Each request must carry the information the server needs to handle it. **Session management** lets an application associate successive requests with the same authenticated user after login.
 
-HTTP is a **stateless protocol**, meaning each request is independent, and the server does not automatically remember previous interactions.
+- A **session** is a period of authenticated interaction. In a **server-side session**, the application stores the session state and gives the client a session ID that references it.
+- A **token** is a credential that can represent an authenticated identity or grant access to a resource. A session ID is one kind of opaque token.
+- A **JSON Web Token (JWT)** is a standardized format for carrying claims. A signed JWT lets a service verify those claims using a cryptographic key.
+- A **cookie** lets a browser store a value and send it automatically on requests within its scope. It can carry a session ID or a JWT.
 
-Session management solves this problem by maintaining the user's authenticated identity after login.
+## Server-side sessions
 
-There are two common approaches:
+### Authentication flow
 
-- Server-side sessions using cookies.
-- Token-based authentication using JSON Web Tokens (JWTs).
-
-## 2. Cookie-Based Session Management
-
-In this approach, the server stores session information, while the client stores only a unique session ID inside a cookie.
-
-### Authentication Flow
-
-1. The user submits a username and password.
-2. The server verifies the credentials against the database.
-3. The server creates a session containing the user ID, role, and session metadata.
-4. The server generates a cryptographically random session ID.
-5. The session ID is stored as the key for the session object.
-6. The server returns the session ID through a `Set-Cookie` HTTP response header.
-7. The browser stores the cookie and automatically includes it in subsequent requests that match the cookie's scope.
-8. The server retrieves the session information using the session ID.
-
-### Session Object Example
-
-The following information is stored on the server:
-
-```json
-{
-  "session_id": "abc123def456",
-  "user_id": 123,
-  "role": "admin",
-  "created_at": "2026-11-25T10:00:00Z",
-  "expires_at": "2026-11-25T10:30:00Z"
-}
-```
-
-The session ID above is illustrative. Production session IDs must be cryptographically random.
-
-### HTTP Response
-
-The server instructs the browser to store the cookie:
-
-```http
-Set-Cookie: session_id=abc123def456; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=1800
-```
-
-### Subsequent HTTP Request
-
-The browser automatically sends the cookie:
-
-```http
-GET /api/profile HTTP/1.1
-Host: example.com
-Cookie: session_id=abc123def456
-```
-
-The server uses the session ID to retrieve the authenticated user's information.
-
-### Architecture
+1. The user submits a username and password, and the server verifies the credentials against its user database.
+2. The server generates a unique, cryptographically random session ID and uses it as the key for a session record containing the user ID, role, and expiration metadata.
+3. The server sends the ID in a `Set-Cookie` response header. The browser stores the cookie.
+4. On subsequent requests within the cookie’s scope, the browser includes the ID in the `Cookie` header. The server retrieves the record, checks that the session is valid, and uses the authenticated identity to evaluate access.
 
 ```mermaid
 sequenceDiagram
@@ -84,177 +36,63 @@ sequenceDiagram
     S-->>C: Protected response
 ```
 
-## 3. Cookie Security Settings
+### Session record and HTTP example
 
-Cookies support attributes that control their behavior and security.
-
-| Attribute | Description | Purpose |
-|---|---|---|
-| HttpOnly | Prevents JavaScript from reading the cookie | Reduces session ID theft through XSS |
-| Secure | Restricts cookie transmission to HTTPS | Protects cookies during transmission |
-| SameSite=Strict | Prevents cookies from being sent with cross-site requests | Reduces CSRF attacks |
-| SameSite=Lax | Allows cookies in certain cross-site navigations | Balances security and usability |
-| SameSite=None | Allows cross-site cookie transmission, subject to browser policies | Supports cross-site integrations |
-| Max-Age | Defines cookie lifetime in seconds | Controls cookie expiration |
-| Expires | Defines a specific expiration date | Controls cookie expiration |
-| Path | Defines which URL paths receive the cookie | Restricts cookie scope |
-| Domain | Defines which domains and subdomains receive the cookie | Controls domain scope |
-
-`SameSite=None` requires the `Secure` attribute.
-
-`HttpOnly` prevents JavaScript from reading cookies, but it does not prevent XSS attacks from making authenticated requests.
-
-Cookie expiration should also be enforced on the server.
-
-## 4. Scaling Server-Side Sessions
-
-Server-side sessions introduce a scaling challenge because every active session requires server-side storage.
-
-For example, 10 million active sessions require approximately 10 million session records.
-
-### Problem with Local Server Memory
-
-When multiple application servers operate behind a load balancer, storing sessions in individual server memory creates problems.
-
-```mermaid
-flowchart TD
-    C[Client] --> LB[Load Balancer]
-    LB --> S1[Server 1]
-    LB --> S2[Server 2]
-    S1 --> M1[Local Session A]
-    S2 --> M2[Session A Not Found]
-```
-
-If the user authenticates through Server 1 but the next request reaches Server 2, Server 2 cannot retrieve the session.
-
-### Solution: Shared Session Store
-
-A centralized session store allows every application server to access the same session information.
-
-Redis is commonly used for this purpose.
-
-```mermaid
-flowchart TD
-    C[Client] --> LB[Load Balancer]
-    LB --> S1[Server 1]
-    LB --> S2[Server 2]
-    LB --> S3[Server 3]
-    S1 --> R[Shared Redis Session Store]
-    S2 --> R
-    S3 --> R
-```
-
-### Benefits of Redis
-
-- Fast in-memory reads and writes.
-- Shared access across application servers.
-- Automatic expiration through TTL.
-- Centralized session invalidation.
-- Supports horizontal scaling of application servers.
-
-The application servers become stateless with respect to session storage, although Redis remains stateful.
-
-An alternative is **sticky sessions**, where the load balancer routes a user to the same server. However, this creates additional dependencies on individual servers and complicates failover.
-
-## 5. Token-Based Authentication (JWT)
-
-JWT stands for **JSON Web Token**.
-
-Instead of storing session information in a centralized session store, a JWT can contain the authentication claims directly inside a digitally signed token.
-
-The server can verify the token without retrieving a session record.
-
-### Authentication Flow
-
-1. The user submits login credentials.
-2. The server verifies the credentials.
-3. The server creates a JWT containing claims such as user ID, role, and expiration time.
-4. The server signs the token using a secret key or private key.
-5. The server returns the token to the client.
-6. The client stores the token in memory or an HttpOnly cookie.
-7. The client includes the token in subsequent requests.
-8. The server verifies the signature and validates the token's claims.
-9. The server identifies the user and determines whether the requested operation is authorized.
-
-### JWT Structure
-
-A signed JWT typically consists of three parts:
-
-```text
-HEADER.PAYLOAD.SIGNATURE
-```
-
-#### Header
-
-Identifies the token type and signing algorithm.
+The server stores the following record. The ID is illustrative.
 
 ```json
 {
-  "alg": "HS256",
-  "typ": "JWT"
-}
-```
-
-#### Payload
-
-Contains claims about the user and token.
-
-```json
-{
-  "sub": "123",
+  "session_id": "abc123def456",
+  "user_id": 123,
   "role": "admin",
-  "iss": "auth.example.com",
-  "aud": "example-api",
-  "iat": 1795629600,
-  "exp": 1795630500
+  "created_at": "2026-11-25T10:00:00Z",
+  "expires_at": "2026-11-25T10:30:00Z"
 }
 ```
 
-Common claims:
+The login response sets a cookie with a 30-minute browser lifetime.
 
-| Claim | Meaning |
-|---|---|
-| sub | Subject, typically the user ID |
-| iss | Token issuer |
-| aud | Intended audience |
-| iat | Issued-at time |
-| exp | Expiration time |
-| nbf | Time before which the token is invalid |
-| jti | Unique token identifier |
+```http
+Set-Cookie: session_id=abc123def456; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=1800
+```
 
-#### Signature
-
-Verifies the token's integrity and authenticity.
-
-Common signing approaches:
-
-- **HMAC (HS256):** Uses a shared secret key for signing and verification.
-- **RSA (RS256):** Uses a private key for signing and a public key for verification.
-
-RSA allows multiple services to verify tokens without giving them the private signing key.
-
-**Important:** A standard signed JWT is encoded, not encrypted. Its payload can be decoded and read by anyone possessing the token.
-
-Never store passwords or confidential information inside a standard signed JWT.
-
-### Sending a JWT
-
-A JWT can be transmitted through an HTTP Authorization header:
+A later request sends the session ID.
 
 ```http
 GET /api/profile HTTP/1.1
-Authorization: Bearer <access_token>
+Host: example.com
+Cookie: session_id=abc123def456
 ```
 
-Alternatively, it can be transmitted through an HttpOnly cookie.
+### Cookie attributes
 
-Cookies and JWTs are not mutually exclusive:
+| Attribute | Effect |
+| --- | --- |
+| `HttpOnly` | Blocks script access to the cookie value, reducing credential theft through XSS. The browser can still send the cookie on requests initiated by scripts. |
+| `Secure` | Restricts cookie transmission to secure connections, typically HTTPS. |
+| `SameSite=Strict` | Sends the cookie only on same-site requests. |
+| `SameSite=Lax` | Also allows the cookie on top-level cross-site navigations that use a safe HTTP method such as `GET`. |
+| `SameSite=None` | Allows cross-site use subject to browser policy and requires `Secure`. |
+| `Max-Age` | Sets the browser lifetime in seconds and takes precedence over `Expires` when both are set. |
+| `Expires` | Sets the browser expiration to a specific date and time. |
+| `Path` | Limits the request paths that receive the cookie. |
+| `Domain` | Broadens the scope to the specified domain and its subdomains. Omit it to restrict the cookie to the host that set it. |
 
-- A cookie is a mechanism for storing and transmitting information.
-- A JWT is a token format.
-- A cookie can contain either a session ID or a JWT.
+Cookie expiration controls browser behavior. The server enforces session expiration independently. [MDN Set-Cookie reference](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie), [OWASP Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)
 
-### JWT Architecture
+## Opaque access tokens
+
+An **opaque access token** is commonly a random credential whose value exposes no readable claims. The API looks up the token in a store or asks the authorization server to **introspect** it. This tells the API whether the token is active and provides information such as the associated identity and permissions. A dedicated authorization service can manage issuance, permissions, and revocation centrally. Remote introspection adds latency and an availability dependency. Cached responses can delay recognition of a revocation. [RFC 7662](https://www.rfc-editor.org/rfc/rfc7662.html)
+
+```text
+Token: 8f2a9c7e4b1d6f03...
+```
+
+For example, a third-party app receives an opaque access token to read a user’s calendar. The calendar API checks with the authorization server to determine whether the token is active and grants permission to read events.
+
+## Signed JSON Web Tokens
+
+A signed JWT carries claims such as the user ID, role, and expiration. After verifying a user’s credentials, the server issues a token. On later requests, a service can verify the signature and validate the claims without fetching a per-token record. The service then uses the verified identity and relevant claims to make an authorization decision.
 
 ```mermaid
 sequenceDiagram
@@ -272,75 +110,75 @@ sequenceDiagram
     S-->>C: Protected response
 ```
 
-## 6. Server-Side Sessions vs JWT
+### Structure and claims
 
-| Feature | Server-Side Sessions | JWT |
-|---|---|---|
-| Authentication state | Server-side session store | Claims inside the token |
-| Client storage | Session ID | Signed token |
-| Architecture | Stateful | Can be stateless |
-| Request validation | Session store lookup | Signature and claims validation |
-| Network dependency | Shared store lookup when using Redis | No session store lookup required |
-| Horizontal scaling | Requires shared storage or session affinity | Servers can validate tokens independently |
-| Immediate revocation | Delete the session record | Requires additional revocation mechanisms |
-| Request size | Usually tens of bytes for the ID | Often hundreds or thousands of bytes |
-| Logout | Destroy server-side session | Remove token and revoke refresh credentials |
-| Permission changes | Can be applied through centralized state | Claims may remain outdated until expiration |
-| Common use cases | Traditional web applications | Distributed APIs and microservices |
+A compact signed JWT has three Base64url-encoded parts.
 
-### Performance Considerations
+```text
+HEADER.PAYLOAD.SIGNATURE
+```
 
-Server-side sessions require a storage lookup on authenticated requests.
+The **header** identifies the signing algorithm and can identify the token type. This example uses `HS256`.
 
-Redis lookups can be very fast, potentially sub-millisecond in favorable environments.
+```json
+{
+  "alg": "HS256",
+  "typ": "JWT"
+}
+```
 
-JWTs avoid the session store network call but require cryptographic verification.
+The **payload** holds the claims. In this example, `role` is an application-specific claim.
 
-Actual performance depends on:
+```json
+{
+  "sub": "123",
+  "role": "admin",
+  "iss": "auth.example.com",
+  "aud": "example-api",
+  "iat": 1795629600,
+  "exp": 1795630500
+}
+```
 
-- Network latency.
-- Signing algorithm.
-- Token size.
-- Session store performance.
-- Application architecture.
+| Claim | Meaning |
+| --- | --- |
+| `sub` | Subject, often a user or service ID |
+| `iss` | Issuer |
+| `aud` | Intended recipient or recipients |
+| `iat` | Time the token was issued |
+| `exp` | Time at or after which the token expires |
+| `nbf` | Earliest time the token may be accepted |
+| `jti` | Unique token identifier |
 
-JWTs are not automatically faster than server-side sessions.
+JWT time claims use seconds since the Unix epoch. The example expires 15 minutes after issuance. [RFC 7519](https://www.rfc-editor.org/rfc/rfc7519.html)
 
-### Revocation Trade-off
+The third part is a cryptographic signature or message authentication code (MAC). It lets the verifier detect tampering and confirm that a holder of the trusted signing key produced the token.
 
-Server-side sessions allow immediate invalidation by deleting the session record.
+- **HS256** uses HMAC with a shared secret. Services with the secret can both create and verify tokens.
+- **RS256** uses RSA with a private signing key and a public verification key. Multiple services can verify tokens while the issuer keeps the private key.
 
-A stateless JWT normally remains valid until its expiration time.
+A signed JWT’s payload is readable by anyone who has the token. Keep passwords and confidential information out of it. Protect signing keys, restrict verification to configured algorithms, and verify the signature before trusting the claims. Validate the expected issuer and audience, enforce expiration, and check `nbf` if present. [RFC 8725](https://www.rfc-editor.org/rfc/rfc8725.html)
 
-Immediate JWT revocation requires mechanisms such as:
+### Storing and sending a JWT
 
-- Token blocklists.
-- Token versioning.
-- Centralized authorization checks.
-- Token introspection.
+A client can hold the token in memory and send it in the `Authorization` header.
 
-These mechanisms reintroduce server-side state.
+```http
+GET /api/profile HTTP/1.1
+Host: example.com
+Authorization: Bearer <access_token>
+```
 
-Revoking a refresh token prevents future access tokens from being issued, but does not automatically invalidate an existing access token.
+A browser can also store a JWT in an `HttpOnly` cookie. Cookie-based requests need CSRF protection where applicable, whether the cookie carries a JWT or a session ID.
 
-## 7. Access Tokens and Refresh Tokens
+## Access tokens and refresh tokens
 
-Token-based authentication commonly uses two types of tokens.
+| Token | Purpose and lifetime |
+| --- | --- |
+| **Access token** | Presented to an API to access protected resources. It can be opaque or carry claims as a JWT. A short lifetime, such as 5–15 minutes, limits how long a stolen token can be used. |
+| **Refresh token** | Presented to the authorization server to obtain a new access token without asking the user to sign in again. It typically lasts longer and needs secure storage. The authorization server can revoke it. |
 
-### Access Token
-
-- Used to authenticate API requests.
-- Has a short expiration time.
-- Commonly valid for 5–15 minutes.
-- Contains claims required for authentication and authorization.
-
-### Refresh Token
-
-- Used to obtain a new access token.
-- Has a longer expiration time.
-- Should be stored securely.
-- Can be revoked by the authentication server.
-- May use rotation to reduce the risk of token reuse.
+**Refresh token rotation** issues a replacement refresh token when the client refreshes its access token. The issuer invalidates the previous refresh token so it can detect reuse. [RFC 9700, Refresh Token Protection](https://www.rfc-editor.org/rfc/rfc9700.html#section-4.14)
 
 ```mermaid
 sequenceDiagram
@@ -355,122 +193,80 @@ sequenceDiagram
     S-->>C: New access token
 ```
 
-Refresh tokens allow users to remain authenticated without repeatedly entering their credentials.
+## Expiration, logout, and revocation
 
-## 8. Session Expiration
+### Absolute and idle expiration
 
-Session expiration limits how long an authenticated session remains valid.
+- **Absolute expiration** sets a fixed maximum lifetime regardless of activity. A session created at 10:00 AM with an eight-hour limit expires at 6:00 PM.
+- **Idle timeout**, also called **sliding expiration**, ends a session after a period of inactivity. Each qualifying request extends the idle deadline.
 
-### Absolute Expiration
+With a 30-minute idle timeout, the deadline moves as follows.
 
-The session expires after a fixed period, regardless of user activity.
-
-Example:
-
-- Login: 10:00 AM
-- Absolute timeout: 8 hours
-- Expiration: 6:00 PM
-
-### Idle Timeout (Sliding Expiration)
-
-The session expires after a specified period of inactivity.
-
-Each qualifying user activity extends the idle expiration time.
-
-Example with a 30-minute idle timeout:
-
-| Activity | Session Expiration |
-|---|---|
+| Activity | Idle deadline |
+| --- | --- |
 | Login at 10:00 AM | 10:30 AM |
 | Request at 10:20 AM | 10:50 AM |
 | Request at 10:40 AM | 11:10 AM |
-| No additional activity | Expires at 11:10 AM |
+| No further activity | Session expires at 11:10 AM |
 
-Production systems can combine absolute and idle expiration to prevent sessions from remaining active indefinitely.
-
-### TTL (Time to Live)
-
-TTL defines how long a record remains available before it expires automatically.
-
-Redis example:
+When both limits apply, the earlier deadline wins. **Time to live (TTL)** controls how long a storage record lasts before it expires automatically. This Redis command creates a session record with a TTL of 1,800 seconds (30 minutes). [Redis SET documentation](https://redis.io/docs/latest/commands/set/)
 
 ```redis
 SET session:abc123 '{"userId":123}' EX 1800
 ```
 
-The session expires after 1,800 seconds (30 minutes).
+Renew the TTL after qualifying activity and cap it at the time remaining before absolute expiration. If the browser cookie also has a fixed lifetime, renew it when needed so it can support the sliding window.
 
-For sliding expiration, the TTL is renewed after qualifying activity, without exceeding the absolute expiration limit.
+### Logout and revocation
 
-## 9. Session Attacks and Defenses
+- **Server-side sessions.** On logout, invalidate the server record and clear the cookie. For example, a banking app can revoke a user’s access across devices by invalidating every session for that user in Redis. Subsequent session lookups reject the invalidated IDs.
+- **Opaque access tokens.** Revoke the token centrally. The next live lookup or introspection can reject it.
+- **JWT access tokens.** On logout, remove the client’s credentials, clear any authentication cookie, and revoke the refresh token if one was issued. Revoking a refresh token prevents new access tokens from being issued with it. An existing access JWT can remain usable until it expires. Immediate rejection requires a check where the token is accepted, such as a token blocklist, a token version check, centralized authorization, or introspection. Each adds a dependency on current state. [RFC 7009, Implementation Note](https://www.rfc-editor.org/rfc/rfc7009.html#section-3), [RFC 7662](https://www.rfc-editor.org/rfc/rfc7662.html)
 
-### 9.1 Session Hijacking
+## Session threats and defenses
 
-Session hijacking occurs when an attacker obtains a valid session ID or authentication token and uses it to impersonate the authenticated user.
+| Threat | What happens | Defenses |
+| --- | --- | --- |
+| **Session hijacking** | Someone uses a stolen session ID or token to impersonate an authenticated user. | Use HTTPS and `Secure` cookies. Generate unique session IDs with a cryptographically secure random number generator and at least 128 bits of entropy. Use limited lifetimes and invalidate compromised credentials. |
+| **Session fixation** | A user logs in with a session ID already known to someone else, and the server keeps that ID after login. | Issue a fresh session ID after login and privilege changes. Invalidate the old ID. |
+| **Cross-site request forgery (CSRF)** | A browser is induced to send an unwanted request with automatically attached credentials. | Use `SameSite=Lax` or `SameSite=Strict` where compatible, apply anti-CSRF tokens, and validate the `Origin` header where appropriate. Keep `GET` requests free of state-changing actions. |
+| **Cross-site scripting (XSS)** | Malicious JavaScript runs in the application’s origin and can read accessible credentials or act as the user. | Use context-appropriate output encoding, sanitize untrusted HTML, and deploy a Content Security Policy (CSP) as an additional layer. Keep sensitive tokens out of `localStorage` when possible. Use `HttpOnly` for authentication cookies. |
 
-#### Defenses
+Keep passwords out of session records. Log session creation and invalidation for auditing, and omit raw session IDs and tokens from logs. Restrict access to the shared session store. [OWASP Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html), [OWASP ASVS 5.0](https://github.com/OWASP/ASVS/releases/tag/v5.0.0)
 
-- Always use HTTPS.
-- Enable HttpOnly and Secure cookie attributes.
-- Use cryptographically random session IDs.
-- Implement short session expiration periods.
-- Rotate session IDs after authentication.
-- Invalidate compromised sessions.
-- Prevent XSS vulnerabilities.
+## Scaling server-side sessions
 
-### 9.2 Session Fixation
+### Local storage and session affinity
 
-Session fixation occurs when an attacker causes a victim to use a session ID known to the attacker before authentication.
+Every active server-side session needs a record. For example, 10 million active sessions require roughly 10 million records if each session has one record. If an application server keeps sessions in its own memory, another server behind the load balancer cannot look up those sessions.
 
-If the application continues using that session ID after login, the attacker may gain access to the authenticated session.
+```mermaid
+flowchart TD
+    C[Client] --> LB[Load Balancer]
+    LB --> S1[Server 1]
+    LB --> S2[Server 2]
+    S1 --> M1[Local Session A]
+    S2 --> M2[Session A Not Found]
+```
 
-#### Defenses
+**Session affinity**, also known as **sticky sessions**, keeps routing a client to the same server. It ties the session to that server and complicates failover.
 
-- Generate a new session ID after successful authentication.
-- Invalidate the previous session ID.
-- Regenerate session IDs after privilege changes.
+### Shared session store and middleware
 
-### 9.3 Cross-Site Request Forgery (CSRF)
+A shared store such as Redis gives application servers fast in-memory reads and writes, TTL-based expiration, and centralized invalidation. Application servers can scale horizontally and remain stateless with respect to sessions. The shared store holds the state, so its availability affects authenticated requests.
 
-CSRF occurs when an attacker tricks an authenticated user's browser into performing an unwanted request against a trusted application.
+```mermaid
+flowchart TD
+    C[Client] --> LB[Load Balancer]
+    LB --> S1[Server 1]
+    LB --> S2[Server 2]
+    LB --> S3[Server 3]
+    S1 --> R[Shared Redis Session Store]
+    S2 --> R
+    S3 --> R
+```
 
-Because browsers automatically include applicable cookies, the application may interpret the request as legitimate.
-
-#### Defenses
-
-- Use SameSite=Strict or SameSite=Lax cookies.
-- Implement anti-CSRF tokens.
-- Validate Origin headers when appropriate.
-- Avoid using GET requests for state-changing operations.
-
-JWTs stored in cookies can also be vulnerable to CSRF.
-
-### 9.4 Cross-Site Scripting (XSS)
-
-XSS occurs when malicious JavaScript executes within a trusted application's origin.
-
-An attacker may steal accessible authentication tokens or perform actions on behalf of an authenticated user.
-
-#### Defenses
-
-- Use context-appropriate output encoding.
-- Sanitize untrusted HTML.
-- Enable Content Security Policy (CSP).
-- Use HttpOnly cookies for sensitive authentication credentials.
-- Avoid storing sensitive tokens in localStorage when possible.
-
-## 10. Standard Production Architecture
-
-A common production architecture for web applications includes:
-
-- Redis as a shared session store.
-- HttpOnly and Secure cookies containing session IDs.
-- A load balancer distributing requests.
-- Stateless application servers.
-- Session middleware.
-- A 30-minute sliding expiration as an example policy.
-- An absolute session expiration limit.
-- Centralized session invalidation.
+A common production setup puts a load balancer in front of application servers, uses `HttpOnly` and `Secure` cookies for session IDs, and applies both an idle timeout, such as 30 minutes, and an absolute limit. Each server uses the same session middleware before running protected routes.
 
 ```mermaid
 flowchart TD
@@ -489,206 +285,28 @@ flowchart TD
     M2 --> A2[Protected API]
 ```
 
-### Session Middleware
+1. Read the session ID from the cookie and look up the session in Redis.
+2. Reject the request if the session is missing, invalid, or expired.
+3. Attach the authenticated identity to the request and renew the idle deadline when appropriate.
+4. Pass the request to the protected route, which enforces authorization for the requested operation.
 
-Session middleware executes before protected application logic.
+## Choosing an approach
 
-Its responsibilities include:
+| Consideration | Server-side session | Opaque access token | Signed JWT |
+| --- | --- | --- | --- |
+| Request validation | Look up a server-side session record. | Look up the token or introspect it. | Verify the signature and claims with a trusted key. |
+| State and scaling | A shared store or session affinity supports multiple servers. | APIs depend on shared token storage or authorization infrastructure. | Services can verify tokens independently. Basic validation needs no per-token record. |
+| Credential size and data exposure | The ID is usually tens of bytes. Session data stays on the server. | The token is typically small. Claims stay on the server. | Often hundreds or thousands of bytes. Claims in a signed token are readable. |
+| Revocation and permission changes | Invalidate sessions centrally. Apply permission changes when the app checks current state or updates the session. | Live validation can enforce revocation and current permissions. | Claims can grow stale until expiry. Earlier changes require a check against current state. |
+| Typical uses | Traditional and monolithic web apps, e-commerce, banking, and admin dashboards with centralized control. | OAuth 2.0 authorization and third-party APIs where centrally managed access or hidden claims matter. | Distributed APIs, API gateways, microservices, service-to-service authentication, and OAuth 2.0 or OpenID Connect implementations that use JWTs. |
 
-1. Read the session ID from the request cookie.
-2. Retrieve the session from Redis.
-3. Validate the session and its expiration.
-4. Attach authenticated user information to the request.
-5. Renew the idle expiration when appropriate.
-6. Reject unauthorized requests.
+For a **public API**, either access-token format can fit. Choose based on how quickly access changes must take effect and whether services need to validate tokens independently. For frequently changing permissions or immediate logout across devices, favor a design that checks current authorization state or centrally invalidates credentials.
 
-This centralizes authentication logic instead of duplicating it across every API endpoint.
+**Performance** depends on network latency, session-store performance, signing algorithm, token size, and overall architecture. A Redis lookup can take less than a millisecond under favorable conditions. Local JWT verification avoids that network lookup and adds cryptographic work and larger credentials to each request.
 
-Authorization must still be enforced for protected operations.
+### Distributed JWT example
 
-## 11. Session Management Security Checklist
-
-- [ ] Generate session IDs using a cryptographically secure random generator with at least 128 bits of entropy.
-- [ ] Regenerate session IDs after successful login.
-- [ ] Regenerate session IDs after privilege changes.
-- [ ] Always use HTTPS.
-- [ ] Enable HttpOnly, Secure, and appropriate SameSite cookie attributes.
-- [ ] Implement absolute and idle session expiration.
-- [ ] Implement CSRF protection where applicable.
-- [ ] Destroy server-side sessions on logout.
-- [ ] Clear authentication cookies on logout.
-- [ ] Revoke refresh tokens when applicable.
-- [ ] Validate JWT signatures, expiration, issuer, and audience.
-- [ ] Restrict accepted JWT signing algorithms.
-- [ ] Never store passwords inside sessions or JWT payloads.
-- [ ] Log session creation and destruction for audit trails.
-- [ ] Never log raw session IDs or authentication tokens.
-- [ ] Protect the shared session store from unauthorized access.
-
-## 12. When to Use Each Approach
-
-### Server-Side Sessions
-
-Suitable for:
-
-- Traditional web applications.
-- E-commerce platforms.
-- Administrative dashboards.
-- Applications requiring immediate session revocation.
-- Applications requiring centralized session control.
-
-### JWT Authentication
-
-Suitable for:
-
-- Distributed systems.
-- Microservices architectures.
-- Service-to-service authentication.
-- APIs requiring independent token verification.
-- Systems with multiple independent application services.
-
-## 13. Key Takeaways
-
-- HTTP is stateless, and session management maintains authenticated identity across requests.
-- Server-side sessions store authentication state on the server and provide the client with a session ID.
-- Redis allows multiple application servers to share session information.
-- JWTs carry signed authentication claims that can be validated independently.
-- Cookies are a storage and transmission mechanism, while JWTs are a token format.
-- Server-side sessions simplify immediate revocation.
-- JWTs simplify distributed token verification but complicate immediate revocation.
-- Both approaches require secure credential storage, expiration, authentication, and authorization.
-
-## 12. When and Why to Use Sessions, Tokens, and JWTs
-
-### 12.1 Understanding the Differences
-
-- **Session:** Authentication state maintained on the server.
-- **Token:** A credential that represents an authenticated identity or grants access to a resource.
-- **JWT (JSON Web Token):** A standardized token format that can contain independently verifiable, signed claims.
-- **Cookie:** A browser mechanism for storing and transmitting credentials, including session IDs and JWTs.
-
-A JWT is a type of token. A session ID is also a type of opaque token.
-
-### 12.2 Server-Side Sessions
-
-The server maintains authentication state, and the client receives a session ID that references that state.
-
-#### When to Use
-
-- Traditional web applications.
-- E-commerce platforms.
-- Banking applications.
-- Administrative dashboards.
-- Applications requiring immediate logout or access revocation.
-- Applications with frequently changing permissions.
-- Monolithic applications.
-
-#### Why Use Sessions
-
-- Centralized control over authenticated users.
-- Immediate session invalidation.
-- Easier management of permission changes.
-- Sensitive session information remains on the server.
-- Smaller authentication credentials transmitted with requests.
-- Straightforward authentication lifecycle management.
-
-#### Disadvantages
-
-- Requires server-side storage.
-- Requires a shared session store when scaling horizontally.
-- Introduces a storage lookup for authenticated requests.
-- Session store availability can affect application availability.
-
-#### Example
-
-An administrator removes a user's access to a banking application.
-
-The server deletes or invalidates all sessions associated with that user in Redis. Subsequent requests are rejected immediately.
-
-Server-side sessions are particularly useful when centralized control and immediate revocation are priorities.
-
-### 12.3 Opaque Tokens
-
-An opaque token is a randomly generated credential that does not contain readable user information or claims.
-
-The receiving service must look up or introspect the token to determine its validity, permissions, and associated identity.
-
-```text
-Token: 8f2a9c7e4b1d6f03...
-```
-
-#### When to Use
-
-- APIs requiring centralized access control.
-- Third-party API integrations.
-- OAuth 2.0 authorization systems.
-- Applications requiring immediate token revocation.
-- Systems where authentication claims should not be exposed to clients.
-
-#### Why Use Opaque Tokens
-
-- Sensitive claims remain on the authorization server.
-- Tokens can be revoked centrally.
-- Permissions can be evaluated using current information.
-- Clients do not need to understand the token's internal structure.
-- Authentication and authorization can be managed by a dedicated service.
-
-#### Disadvantages
-
-- Requires token lookup or introspection.
-- Introduces network latency when using a remote authorization service.
-- Creates a dependency on the token store or authorization server.
-
-#### Example
-
-A third-party application receives an opaque access token to access a user's calendar.
-
-The calendar API validates the token through the authorization server, which determines whether the application has permission to read calendar events.
-
-### 12.4 JSON Web Tokens (JWTs)
-
-A signed JWT contains claims that services can verify independently using cryptographic keys.
-
-Unlike opaque tokens, a signed JWT can be validated without retrieving a corresponding token record from centralized storage.
-
-#### When to Use
-
-- Microservices architectures.
-- Distributed systems.
-- Service-to-service authentication.
-- API gateways.
-- Applications with multiple independent backend services.
-- Systems requiring decentralized token verification.
-- OAuth 2.0 and OpenID Connect implementations that use JWTs.
-
-#### Why Use JWTs
-
-- Services can independently verify authentication claims.
-- Reduces dependency on centralized session storage.
-- Avoids a session lookup for every request.
-- Simplifies horizontal scaling.
-- Supports distributed authentication and authorization.
-- Multiple services can verify tokens using a public key.
-
-#### Disadvantages
-
-- Immediate revocation requires additional mechanisms.
-- Permissions inside the token can become outdated.
-- Tokens are larger than typical session IDs.
-- Requires secure signing key management.
-- Signed payloads are readable unless separately encrypted.
-- Stolen tokens may remain usable until expiration.
-
-#### Example
-
-An e-commerce platform has multiple microservices:
-
-- User Service
-- Order Service
-- Payment Service
-- Inventory Service
-
-The authentication service issues a signed JWT. Each authorized microservice can validate the token using the appropriate public key without contacting the authentication service for every request.
+In an e-commerce platform, the authentication service issues a signed JWT and the client sends it through the API gateway. Each intended recipient can use the issuer’s public key to verify the token locally, check that its audience covers that service, and enforce its own authorization rules.
 
 ```mermaid
 flowchart TD
@@ -701,49 +319,9 @@ flowchart TD
     G --> I[Inventory Service]
 ```
 
-Each service validates the relevant token claims and enforces its own authorization requirements.
+### Hybrid architecture
 
-### 12.5 Comparison
-
-| Feature | Server-Side Session | Opaque Access Token | JWT |
-|---|---|---|---|
-| Authentication state | Session store | Token store | Token claims |
-| Validation | Session lookup | Lookup or introspection | Signature and claims |
-| Centralized storage | Required | Typically required | Not required for basic validation |
-| Immediate revocation | Easy | Easy with live validation | Requires additional mechanisms |
-| Horizontal scaling | Shared session store | Shared authorization infrastructure | Independent verification |
-| Credential size | Small | Small | Larger |
-| Claims visible to client | No | No | Yes, unless encrypted |
-| Permission updates | Centralized | Centralized | May require a new token |
-| Architecture | Stateful | Typically stateful | Can be stateless |
-| Common use case | Web applications | API authorization | Distributed systems |
-
-### 12.6 Choosing the Right Approach
-
-| Scenario | Suitable Approach | Reason |
-|---|---|---|
-| Traditional web application | Server-side session | Simple centralized authentication |
-| Banking application | Server-side session | Immediate access revocation |
-| Administrative dashboard | Server-side session | Centralized permission management |
-| Third-party API integration | Opaque access token | Controlled and revocable access |
-| Public API | Opaque token or JWT | Depends on authorization requirements |
-| Microservices architecture | JWT | Independent token verification |
-| Service-to-service communication | JWT | Distributed identity verification |
-| Frequently changing permissions | Session or opaque token | Access to current authorization state |
-| Large distributed system | JWT | Reduced centralized validation dependencies |
-| Immediate logout across devices | Server-side session | Centralized session invalidation |
-
-### 12.7 Hybrid Authentication Architecture
-
-Applications can combine multiple authentication approaches.
-
-For example:
-
-- The browser authenticates using a server-side session.
-- Redis maintains the user's session.
-- The backend issues or obtains short-lived JWTs for internal microservices.
-- Internal services independently validate those JWTs.
-- Refresh tokens may be used in token-based client architectures to maintain authentication.
+A system can use a Redis-backed session for browser requests and short-lived JWTs for internal service calls. The backend issues or obtains those tokens, and the receiving services verify them independently. This gives the browser a centrally managed session while letting internal services validate requests locally. A token-based client can use refresh tokens to maintain access over time.
 
 ```mermaid
 flowchart TD
@@ -753,17 +331,3 @@ flowchart TD
     B -->|Short-lived JWT| S2[Payment Service]
     B -->|Short-lived JWT| S3[Inventory Service]
 ```
-
-This approach combines centralized user session management with distributed service authentication.
-
-### 12.8 Main Architectural Trade-Off
-
-The primary trade-off is **centralized control versus decentralized verification**.
-
-- **Sessions:** Use when centralized authentication state and immediate revocation are important.
-- **Opaque tokens:** Use when APIs require centrally managed, revocable access credentials.
-- **JWTs:** Use when independent token verification across distributed services is important.
-
-JWTs are not inherently more secure, faster, or more scalable than sessions in every architecture.
-
-The appropriate approach depends on security requirements, revocation requirements, infrastructure, performance, and system complexity.
