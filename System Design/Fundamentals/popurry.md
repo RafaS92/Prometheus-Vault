@@ -350,3 +350,97 @@ Also track whether the operation is **in progress**, **completed**, or **failed*
 | Concurrent data modifications | Transactions, locking, concurrency control |
 
 **Core principle:** Optimize the actual bottleneck, use asynchronous processing when it provides a measurable benefit, and design retries so that failures do not create additional failures.
+
+
+# Elasticity
+
+**Elasticity** is the ability of a system to automatically adjust its resources to match current demand.
+
+- **Scale out:** Add resources when traffic increases.
+- **Scale in:** Remove resources when traffic decreases.
+
+## Benefits
+
+- Maintains performance during traffic spikes.
+- Reduces costs when demand is low.
+- Minimizes manual infrastructure management.
+- Prevents unnecessary resource allocation.
+
+## Scalability vs. Elasticity
+
+| Scalability | Elasticity |
+|---|---|
+| Ability to handle increasing workloads. | Ability to dynamically adjust resources to demand. |
+| Can be manual or automatic. | Typically automatic. |
+| Focuses on capacity. | Focuses on matching capacity to demand. |
+
+## Example
+
+AWS Auto Scaling automatically increases the number of EC2 instances when demand rises and removes instances when demand decreases.
+
+
+# Challenges of Elasticity
+
+Although elasticity automatically adjusts resources based on demand, it introduces several challenges.
+
+## 1. Cold Start Latency
+
+New resources require time to become operational.
+
+Approximate startup times:
+
+- Virtual machines: 30–90 seconds.
+- Containers: 5–30 seconds.
+
+Startup times vary depending on configuration and infrastructure. During sudden traffic spikes, additional resources may not become available quickly enough.
+
+**Solutions:**
+- Maintain a warm pool of pre-provisioned instances.
+- Use serverless functions for faster scaling, considering their own cold start limitations.
+
+## 2. Stateful Services
+
+Stateful services are harder to scale because they maintain persistent data.
+
+Examples:
+- Databases.
+- Message brokers.
+- Applications storing data locally.
+
+Adding a database read replica can take minutes or hours because data must be synchronized.
+
+**Elasticity works best with stateless application servers.**
+
+## 3. Over-Scaling
+
+Occurs when aggressive scaling policies allocate more resources than necessary.
+
+**Consequences:**
+- Increased infrastructure costs.
+- Unnecessary resource consumption.
+
+**Solutions:**
+- Configure maximum instance limits.
+- Avoid reacting aggressively to temporary traffic spikes.
+
+## 4. Under-Scaling
+
+Occurs when conservative scaling policies fail to allocate resources quickly enough.
+
+For example, waiting until CPU utilization exceeds 95% for 15 minutes before adding instances.
+
+**Consequences:**
+- Increased latency.
+- Degraded performance.
+- Potential customer loss.
+
+## Summary
+
+| Challenge | Main Impact |
+|---|---|
+| Cold start | Delayed resource availability |
+| Stateful services | Data synchronization complexity |
+| Over-scaling | Excessive infrastructure costs |
+| Under-scaling | Poor performance and user experience |
+
+**The goal of elasticity is to balance infrastructure costs, resource availability, and application performance.**
